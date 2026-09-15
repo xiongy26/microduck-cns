@@ -12,6 +12,11 @@ import { createDuckPhysics, mjcfToWorld, DEFAULT_POSE } from './physics.js';
 const LOOP_S = 20;
 
 // ---------- boot ----------
+const state = {
+  playing: true,
+  chips: { wireframe: false, connectome: false, controller: true, physics: false, ocean: true },
+};
+
 const robot = await buildRobot('assets/robot.json', 'assets/meshes/');
 robot.root.rotation.set(-Math.PI / 2, 0, 0, 'YXZ'); // MJCF z-up → three y-up
 
@@ -162,11 +167,6 @@ new ResizeObserver(fitAll).observe(document.getElementById('app'));
 fitAll();
 
 // ---------- UI state ----------
-const state = {
-  playing: true,
-  chips: { wireframe: false, connectome: false, controller: true, physics: false, ocean: true },
-};
-
 document.querySelectorAll('.chip').forEach((btn) => {
   btn.addEventListener('click', () => {
     const k = btn.dataset.chip;
@@ -290,7 +290,7 @@ function physicsSnapshot(st, dt) {
     body: {
       heading: -_eul.y, roll: _eul.z, pitch: _eul.x,
       height: robot.root.position.y,
-      speed: physics.mode === 'walk' ? 0.15 : 0,
+      speed: st.speed,
       pos: robot.root.position.clone(),
     },
     scanYaw: angles['head_yaw'] ?? 0,
@@ -318,10 +318,15 @@ function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
 
   let snap = null;
+  let sensory = { speed: 0, yawRate: 0, upright: 1, fallen: 0, headSpeed: 0 };
   const useRL = physics && state.chips.controller && !physicsFailed;
   if (useRL) {
     if (state.playing && scrubFrac === null) physics.resume(); else physics.pause();
-    snap = physicsSnapshot(physics.getState(), dt);
+    const st = physics.getState();
+    snap = physicsSnapshot(st, dt);
+    // proprioceptive + vestibular channels feeding the connectome brain
+    const upr = THREE.MathUtils.clamp((-st.gravityZ - 0.55) / 0.3, 0, 1);
+    sensory = { speed: st.speed, yawRate: st.yawRate, upright: upr, fallen: 1 - upr, headSpeed: st.headSpeed };
     simTime = snap.t % LOOP_S;
     timeline.record(snap.angles, snap.drives);
   } else if (!physics && state.chips.controller && !physicsFailed) {
@@ -331,12 +336,14 @@ function frame() {
     snap = gait.update(dt);
     simTime = (simTime + dt) % LOOP_S;
     timeline.record(snap.angles, snap.drives);
+    sensory = { speed: snap.body.speed, yawRate: headingRate, upright: 1, fallen: 0, headSpeed: 0 };
   } else if (scrubFrac !== null) {
     timeline.sampleAt(scrubFrac, replayAngles, replayDrives);
     for (const j of JOINT_ORDER) robot.setJoint(j, replayAngles[j]);
     if (physics) {
-      mjcfToWorld(physics.getState().pos, physics.getState().quat, robot.root.position, robot.root.quaternion);
-      snap = physicsSnapshot(physics.getState(), dt);
+      const st = physics.getState();
+      mjcfToWorld(st.pos, st.quat, robot.root.position, robot.root.quaternion);
+      snap = physicsSnapshot(st, dt);
       snap.angles = { ...replayAngles }; snap.drives = { ...replayDrives };
       for (const j of JOINT_ORDER) robot.setJoint(j, replayAngles[j]);
     } else {
@@ -352,14 +359,13 @@ function frame() {
     prevHeading = snap.body.heading;
   }
 
-  cns.update({
-    drives: snap.drives,
-    signals: {
-      turn: THREE.MathUtils.clamp(headingRate * 0.8, -1, 1),
-      scan: snap.scanYaw / 0.9,
-      speed: snap.body.speed / 0.06,
-    },
-  }, dt);
+  // the brain steps the full CNS dynamics and decodes commands from its
+  // descending population; the RL policy executes them (balance + gait)
+  const cmds = cns.update({ drives: snap.drives, sensory }, dt);
+  if (useRL) {
+    physics.setCommand(cmds.vx, 0, cmds.wz);
+    physics.setHeadOffsets(cmds.head);
+  }
 
   // HUD
   const epT = simTime;

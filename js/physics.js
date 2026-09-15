@@ -108,12 +108,13 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
   let lastAction = new Float32Array(14);
   const obs = new Float32Array(OBS_SIZE);
   const cmd = new Float32Array(13);
+  // velocity commands come from the connectome brain (main.js每帧写入):
+  // the brain decides walk/stand/turn, this policy handles low-level balance.
   const command = { vx: 0, vy: 0, wz: 0 };
-  let commandOverride = false;
+  let headOffsets = null;  // {neck_pitch, head_pitch, head_yaw, head_roll} from the brain
   let stepCount = 0;
   let paused = false;
-  let mode = 'stand';      // exploratory behavior cycle: stand <-> walk
-  let modeTimer = 2.5;
+  let mode = 'stand';      // derived from the brain's commands (walk/stand)
   let modeSince = 0;       // control steps since last mode switch
   let running = false;
   // fall detection + self-recovery (1:1 with the reference pipeline):
@@ -121,13 +122,14 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
   // {state:"recovering"} → the stand policy self-rights the duck.
   let recovery = null;
   let fallDebounce = 0;
-  let turnWz = 0;
+  let prevX = 0, prevY = 0;
   const FALL_DEBOUNCE_STEPS = 10;
   const FALL_SETTLE_STEPS = 15;
   const RECOVER_UPRIGHT_STEPS = 50;
   const RECOVER_GIVEUP_STEPS = 300;
   const _q = new THREE.Quaternion();
   const _g = new THREE.Vector3();
+  const HEAD_JOINTS = ['neck_pitch', 'head_pitch', 'head_yaw', 'head_roll'];
 
   function projGravZ() {
     const xq = data.body(trunkId).xquat;
@@ -143,8 +145,8 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
     recovery = null;
     fallDebounce = 0;
     mode = 'stand';
-    modeTimer = 2;
     modeSince = 0;
+    prevX = data.qpos[0]; prevY = data.qpos[1];
   }
 
   function buildObs() {
@@ -183,35 +185,16 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
     const out = await session.run(feeds);
     const act = Object.values(out)[0].data;
     lastAction.set(act);
-    for (let j = 0; j < 14; j++) data.ctrl[j] = DEFAULT_POSE[j] + act[j];
+    for (let j = 0; j < 14; j++) {
+      // brain head offsets ride on top of the policy's own head actions
+      const off = headOffsets?.[JOINT_NAMES[j]] ?? 0;
+      data.ctrl[j] = DEFAULT_POSE[j] + act[j] + off;
+    }
     for (let s = 0; s < DECIMATION; s++) mujoco.mj_step(model, data);
     stepCount++;
-    modeSince++;
-    // exploratory behavior: stand in place <-> walk straight, occasionally
-    // turning. Command magnitudes are within the proven keyboard range of the
-    // reference pipeline (vx 0.25; small wz bursts) — the walk policy ignores
-    // weaker commands.
-    if (!recovery && !commandOverride) {
-      modeTimer -= CTRL_DT;
-      if (modeTimer <= 0) {
-        if (mode === 'stand') {
-          mode = 'walk';
-          modeTimer = 6 + Math.random() * 4;
-          turnWz = Math.random() < 0.35 ? (Math.random() < 0.5 ? 0.35 : -0.35) : 0;
-        } else {
-          mode = 'stand';
-          modeTimer = 2.5 + Math.random() * 3;
-        }
-        modeSince = 0;
-      }
-      if (mode === 'walk') {
-        command.vx = 0.25;
-        command.vy = 0;
-        command.wz = turnWz;
-      } else {
-        command.vx = 0; command.vy = 0; command.wz = 0;
-      }
-    }
+    // the brain's velocity commands define the behavioral mode
+    const newMode = (Math.abs(command.vx) > 0.03 || Math.abs(command.wz) > 0.02) ? 'walk' : 'stand';
+    if (newMode !== mode) { mode = newMode; modeSince = 0; } else modeSince++;
     // fall handling
     const death = poseIsDead();
     if (death === 'exploded') { reset(); return; }
@@ -226,9 +209,6 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
         recovery.uprightSteps = projGravZ() < -0.85 ? recovery.uprightSteps + 1 : 0;
         if (recovery.uprightSteps >= RECOVER_UPRIGHT_STEPS) {
           recovery = null;
-          mode = 'walk';
-          modeTimer = 5;
-          modeSince = 0;
           lastAction.fill(0);
         } else if (recovery.steps >= RECOVER_GIVEUP_STEPS) {
           reset();
@@ -270,12 +250,12 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
     pause() { paused = true; },
     resume() { paused = false; },
     reset,
+    // velocity commands from the connectome brain (called every animation frame)
     setCommand(vx, vy, wz) {
-      commandOverride = true;
       command.vx = vx; command.vy = vy; command.wz = wz;
     },
-    clearCommandOverride() { commandOverride = false; },
-    forceMode(m) { mode = m; modeTimer = 30; modeSince = 0; }, // debug override
+    // head joint target offsets from the brain's gaze-scan circuit
+    setHeadOffsets(head) { headOffsets = head; },
     get policy() { return recovery?.state === 'recovering' ? 'stand (recovery)' : 'walk'; },
     get mode() { return recovery ? 'recovery' : mode; },
     get modeSinceSteps() { return modeSince; },
@@ -285,6 +265,15 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
       const qpos = data.qpos;
       const angles = new Float32Array(14);
       for (let j = 0; j < 14; j++) angles[j] = qpos[qposAdr[j]];
+      // sensory channels for the brain: base speed (horizontal), body yaw rate
+      // (imu gyro z, body frame ≈ world frame near upright), upright measure
+      const gz = projGravZ();
+      const sens = data.sensordata;
+      const speed = Math.hypot(qpos[0] - prevX, qpos[1] - prevY) / CTRL_DT;
+      prevX = qpos[0]; prevY = qpos[1];
+      let headSpeed = 0;
+      for (let j = 5; j <= 8; j++) headSpeed += Math.abs(data.qvel[dofAdr[j]]);
+      headSpeed /= 4;
       return {
         pos: [qpos[0], qpos[1], qpos[2]],
         quat: [qpos[3], qpos[4], qpos[5], qpos[6]], // wxyz, MuJoCo world frame
@@ -293,6 +282,10 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
         time: stepCount * CTRL_DT,
         mode,
         upright: data.qpos[2],
+        speed,
+        yawRate: sens[gyroAdr + 2],
+        gravityZ: gz,
+        headSpeed,
       };
     },
   };

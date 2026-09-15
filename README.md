@@ -1,12 +1,14 @@
 # MALE CNS / MICRODUCK — connectome-driven robot dashboard
 
 复现截图效果的 Web demo：用「果蝇雄性中枢神经系统（Male CNS）connectome 子集」的
-建模神经活动，驱动 MicroDuck 双足机器人的探索性行走与头部运动，左侧是机器人仿真、
-右侧是神经解剖映射，底部是 14 关节的控制器输出时间轴。
+**仿真神经动力学** 探索性地驱动 MicroDuck 双足机器人的行走、转向与头部扫描运动，
+左侧是机器人仿真、右侧是神经解剖映射，底部是 14 关节的控制器输出时间轴。
 
-机器人的站立/行走由**真实训练 RL 策略 + MuJoCo 物理仿真**驱动
+机器人低层运动由**真实训练 RL 策略 + MuJoCo 物理仿真**执行
 （MuJoCo WASM + onnxruntime-web，策略为 `BEST_alpha_stand/walking.onnx`），
-管线 1:1 移植自本地的 microduck-ar 项目。
+**大脑（connectome CTRNN）只出高级
+指令**——前进速度、转向速率和头部关节目标偏移，类似真实苍蝇"脑→VNC 下行命令"
+的分层控制。
 
 ![screenshot](docs/screenshot.png)
 
@@ -27,30 +29,38 @@ python3 server.py        # 带 no-cache 头的静态服务器, 端口 8123
 | 机器人模型 | [Pollen Robotics **MicroDuck**](https://github.com/pollen-robotics/microduck)（开源双足鸭子机器人）— 关节定义取自 [`pollen-robotics/microduck_rl`](https://github.com/pollen-robotics/microduck_rl) 的 MJCF（`robot_walk.xml`，14 关节），网格为官方 STL |
 | 神经系统原型 | Janelia FlyEM 的 **MANC**（雄性成虫神经索 connectome，~25,000 神经元 / [neuprint-cns.janelia.org](https://neuprint-cns.janelia.org)）与 FAFB 雄性大脑（FlyWire） |
 | 神经可视化数据 | **程序化生成**（见下），但数量契约与真实一致：192 神经元 / 2,456 连接，按真实解剖分区（脑 56、下行 16、VNC 运动池 96、中间 8、上行 16），运动池→关节为拓扑映射（前腿关节→ pro/meso/metathoracic 神经节，头颈关节→ 食道下神经节 SOG） |
+| 控制器 | **方案 B 分层控制**：192 神经元 CTRNN 微回路（模式/转向/扫描 + 感觉反馈）输出高级指令；低层平衡与步态由训练好的 RL 策略执行。连接为结构化功能微回路 + 弥散弱耦合（参数经 tools 外的原型扫描调定），非训练 MANC 权重 |
 
-## 神经活动 → 机器人运动的数据流
+## 神经活动 → 机器人运动的数据流（闭环）
 
 ```
-RL 策略(ONNX, 50Hz) ──► MuJoCo 物理(200Hz) ──► qpos ──► 机器人渲染
-   ▲ 观测: 陀螺仪/重力投影/关节角/关节速/上一动作/速度指令(61维)
-   └─ 行为循环: 原地站立(零指令) ⇄ 前进+转向(vx 0.25, 偶发 ω)
+        ┌──────────────────────── 192 神经元 CTRNN（connectome.js）──────────────────────┐
+        │  感觉上行(16) ← 身体状态: 速度/偏航率/直立度/摔倒/头颈本体感觉                  │
+        │  脑(56): 模式回路 W/S 翻转触发器 + 稳态压 → 走/停节律                          │
+        │          转向回路 L/R + 稳态压 → 探索性转向；扫描振荡器 SY/SP → 头部扫描        │
+        │  下行(16): DW/DS/DL/DR 指令群 ──解码──► vx / wz / 头部关节偏移                 │
+        └──────────────────────────────────┬────────────────────────────────────────────┘
+                                           ▼
+  RL 策略(ONNX, 50Hz) ◄─ 指令(vx,wz)   头部偏移加在策略动作上
+        │ 观测: 陀螺仪/重力投影/关节角/关节速/上一动作/指令(61维)
+        ▼
+  MuJoCo 物理(200Hz) ──► qpos ──► 机器人渲染 + 关节速度/动作 ──► VNC 运动池活性(着色)
         │
-        └─ 关节速度+策略动作 ──► 192 神经元活性模型 ──► 解剖视图着色
-              (青=正肌张力 / 橙=负肌张力)              + 连接脉冲动画
+        └──► 身体状态回灌大脑感觉通道（闭环）
 ```
 
-- 机器人动作来自训练好的强化学习策略（`BEST_alpha_walking.onnx`），
-  观测 61 维：`[机体角速度(3), 重力投影(3), 关节角-默认(14), 关节速度(14),
-  上一动作(14), 指令(13)]`，50Hz 推理 × 4 步 5ms 物理子步
-- 摔倒自动恢复：直立度检测（重力投影 > -0.5 持续 0.2s）→ 物理沉降 →
-  切换 `BEST_alpha_stand.onnx` 自我扶正 → 恢复行走
-- 每个关节对应一个 VNC 运动神经池，池活性 = 关节速度与策略动作的融合
-  （截图中 *Cyan – positive / Orange – negative muscle state* 的含义）
-- 脑神经元跟随转向指令与头部扫描事件，下行神经元传递指令，
-  上行神经元携带运动状态反馈
-- HUD 的 *RL policy / mode* 显示当前策略与行为（stand/walk/recovery）；
-  关掉 `TRAINED CONTROLLER` 芯片 = 消融实验（未训练的噪声控制器原地乱蹬，
-  MuJoCo 暂停）
+- 大脑是真正的**在环控制器**：每个渲染帧积分全部 192 个神经元的 CTRNN 动力学
+  （2456 条加权连接 + OU 噪声 + 4 个慢稳态变量），指令从下行神经元群解码——
+  `vx = 0.25·(DW−DS)`、`wz = 0.35·(DL−DR)`、头部偏移来自扫描振荡器群
+- 走/停节律由 W/S 互相抑制（赢者通吃）+ 慢稳态压（行走时积累"疲劳"，站立时
+  积累相反压力）产生：行走 bout ≈ 6 s、站立 bout ≈ 3–5 s，类似果蝇的探索-停顿节律
+- 摔倒时感觉通道"fallen"强激活 S 群、抑制 W 群 → 大脑立即停止行走指令，
+  配合物理端的摔倒恢复状态机（stand 策略自我扶正）
+- 视觉着色与原截图语义一致：运动池活性 = 实际肌张力读出（青=正/橙=负），
+  但现在它是**脑动力学的一部分**（运动池接受下行指令与本体感觉输入）
+- CONNECTOME DYNAMICS 开关：2,456 条连接 + 沿真实活动突触行进的脉冲动画
+- HUD 的 *RL policy / mode* 显示策略与大脑当前行为模式；关掉
+  `TRAINED CONTROLLER` 芯片 = 消融实验（未训练噪声控制器，物理暂停）
 
 ## 交互
 
@@ -71,10 +81,10 @@ microduck-cns/
 ├── index.html / css/style.css      # 仪表盘布局
 ├── js/
 │   ├── main.js                     # 三视口渲染 / HUD / 开关 / 状态同步
-│   ├── physics.js                  # MuJoCo WASM + RL 策略推理 + 行为循环
+│   ├── physics.js                  # MuJoCo WASM + RL 策略推理（执行大脑指令）
 │   ├── robot.js                    # MJCF 运动学树重建 + STL 材质分配
 │   ├── gait.js                     # (备用) 过程式步态 + 未训练消融模式
-│   ├── connectome.js               # 192 神经元 Male CNS + 2456 连接 + 活性模型
+│   ├── connectome.js               # 192 神经元 CTRNN 大脑：微回路动力学 + 指令解码 + 解剖渲染
 │   └── timeline.js                 # 14 关节 20s 环形缓冲时间轴
 ├── assets/
 │   ├── robot.json                  # 由 tools/mjcf_to_json.py 转换的运动学树
