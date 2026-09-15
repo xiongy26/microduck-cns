@@ -130,7 +130,9 @@ export class GaitController {
       const ch = this.chains[side];
       const tipWorld = ch.ankleGroup.localToWorld(ch.tipLocal.clone());
       ch.stance = { x: tipWorld.x, z: tipWorld.z };
-      hoverSum += -tipWorld.y + 0.004; // lift 4mm so knees take a slight flex
+      // raise the trunk 12 mm above natural contact: legs near-straight with a
+      // soft knee flex (the -tipY0 exact value forced a deep squat)
+      hoverSum += -tipWorld.y + 0.012;
     }
     this.chains.left.hover = hoverSum / 2;
     this.chains.right.hover = hoverSum / 2;

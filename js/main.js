@@ -7,6 +7,7 @@ import { buildRobot } from './robot.js';
 import { GaitController, JOINT_ORDER } from './gait.js';
 import { Connectome, NEURON_COUNT, CONNECTION_COUNT } from './connectome.js';
 import { Timeline } from './timeline.js';
+import { createDuckPhysics, mjcfToWorld, DEFAULT_POSE } from './physics.js';
 
 const LOOP_S = 20;
 
@@ -17,6 +18,30 @@ robot.root.rotation.set(-Math.PI / 2, 0, 0, 'YXZ'); // MJCF z-up → three y-up
 const gait = new GaitController(robot);
 const cns = new Connectome();
 window.__dbg = { gait, robot, cns, THREE };
+
+// Real MuJoCo physics + trained RL policies (stand/walk ONNX actors). Falls
+// back to the procedural gait if the runtimes cannot load (offline CDN).
+let physics = null;
+let physicsFailed = false;
+const loadBadge = document.getElementById('loadBadge');
+createDuckPhysics({
+  onProgress: (m) => {
+    loadBadge.textContent = 'RL PHYSICS · ' + m.toUpperCase();
+    loadBadge.style.display = 'block';
+  },
+}).then((p) => {
+  physics = p;
+  window.__physics = p;
+  if (state.chips.controller && state.playing) p.resume(); else p.pause();
+  p.start();
+  loadBadge.style.display = 'none';
+}).catch((err) => {
+  console.error('RL physics init failed — procedural fallback', err);
+  physicsFailed = true;
+  gait.trained = state.chips.controller;
+  loadBadge.textContent = 'RL RUNTIME UNAVAILABLE · PROCEDURAL FALLBACK';
+  setTimeout(() => { loadBadge.style.display = 'none'; }, 5000);
+});
 const timeline = new Timeline(document.getElementById('tracks'));
 timeline.setRanges(robot.joints);
 
@@ -157,7 +182,9 @@ function applyChip(k) {
     case 'wireframe': robot.setAllWireframe(on); break;
     case 'connectome': cns.setDynamics(on); break;
     case 'controller':
-      gait.trained = on;
+      // ON = real RL policy via MuJoCo; OFF = untrained procedural ablation.
+      if (physics) { on ? physics.resume() : physics.pause(); }
+      gait.trained = physicsFailed ? on : false;
       break;
     case 'physics': gait.physics = on; break;
     case 'ocean': {
@@ -216,6 +243,8 @@ const hudDuration = document.getElementById('hudDuration');
 const hudBody = document.getElementById('hudBody');
 const hudUnit = document.getElementById('hudUnit');
 const hudState = document.getElementById('hudState');
+const hudPolicy = document.getElementById('hudPolicy');
+const hudMode = document.getElementById('hudMode');
 const tcNow = document.getElementById('tcNow');
 
 function fmtTime(t) {
@@ -230,26 +259,97 @@ let prevHeading = gait.heading;
 let headingRate = 0;
 const replayAngles = {}; const replayDrives = {};
 JOINT_ORDER.forEach((j) => { replayAngles[j] = 0; replayDrives[j] = 0; });
+const physDrives = {}; const physPrev = {};
+JOINT_ORDER.forEach((j) => { physDrives[j] = 0; physPrev[j] = 0; });
+const _eul = new THREE.Euler();
+
+function physicsSnapshot(st, dt) {
+  // drive the visual rig from the MuJoCo state and build a snapshot with the
+  // same shape the procedural gait produces
+  mjcfToWorld(st.pos, st.quat, robot.root.position, robot.root.quaternion);
+  const angles = {}; const drives = {};
+  for (let j = 0; j < JOINT_ORDER.length; j++) {
+    const name = JOINT_ORDER[j];
+    robot.setJoint(name, st.angles[j]);
+    angles[name] = st.angles[j];
+    const prev = physPrev[name];
+    const range = robot.joints.get(name).range;
+    const scale = Math.max(1e-4, (range[1] - range[0]) / 2);
+    const vel = (st.angles[j] - prev) / Math.max(dt, 1e-3);
+    const dVel = THREE.MathUtils.clamp((vel / scale) * 0.35, -1, 1);
+    const dAct = THREE.MathUtils.clamp(st.action[j], -1, 1);
+    const d = THREE.MathUtils.clamp(0.6 * dVel + 0.4 * dAct, -1, 1);
+    physDrives[name] += (d - physDrives[name]) * Math.min(1, dt * 10);
+    drives[name] = physDrives[name];
+    physPrev[name] = st.angles[j];
+  }
+  _eul.setFromQuaternion(robot.root.quaternion, 'YXZ');
+  return {
+    t: st.time,
+    angles, drives,
+    body: {
+      heading: -_eul.y, roll: _eul.z, pitch: _eul.x,
+      height: robot.root.position.y,
+      speed: physics.mode === 'walk' ? 0.15 : 0,
+      pos: robot.root.position.clone(),
+    },
+    scanYaw: angles['head_yaw'] ?? 0,
+    eventDuration: physics.modeSinceSteps * 0.02,
+  };
+}
+
+function holdStandSnapshot(dt) {
+  // physics runtimes still loading: hold the STAND keyframe pose kinematically
+  for (let j = 0; j < JOINT_ORDER.length; j++) robot.setJoint(JOINT_ORDER[j], DEFAULT_POSE[j]);
+  robot.root.position.set(0, -0.012, 0);
+  robot.root.rotation.set(-Math.PI / 2, 0, 0, 'YXZ');
+  const angles = {}; const drives = {};
+  JOINT_ORDER.forEach((j) => { angles[j] = DEFAULT_POSE[j]; drives[j] = 0; });
+  simTime = (simTime + dt) % LOOP_S;
+  return {
+    t: simTime, angles, drives,
+    body: { heading: 0, roll: 0, pitch: 0, height: -0.012, speed: 0, pos: new THREE.Vector3() },
+    scanYaw: 0, eventDuration: 0,
+  };
+}
 
 function frame() {
   requestAnimationFrame(frame);
   const dt = Math.min(clock.getDelta(), 0.05);
 
   let snap = null;
-  if (state.playing) {
+  const useRL = physics && state.chips.controller && !physicsFailed;
+  if (useRL) {
+    if (state.playing && scrubFrac === null) physics.resume(); else physics.pause();
+    snap = physicsSnapshot(physics.getState(), dt);
+    simTime = snap.t % LOOP_S;
+    timeline.record(snap.angles, snap.drives);
+  } else if (!physics && state.chips.controller && !physicsFailed) {
+    snap = holdStandSnapshot(dt);
+    prevHeading = 0; headingRate = 0;
+  } else if (state.playing) {
     snap = gait.update(dt);
     simTime = (simTime + dt) % LOOP_S;
     timeline.record(snap.angles, snap.drives);
-    const hr = (snap.body.heading - prevHeading) / Math.max(dt, 1e-4);
-    headingRate += (hr - headingRate) * Math.min(1, dt * 4);
-    prevHeading = snap.body.heading;
   } else if (scrubFrac !== null) {
     timeline.sampleAt(scrubFrac, replayAngles, replayDrives);
     for (const j of JOINT_ORDER) robot.setJoint(j, replayAngles[j]);
-    snap = gait.snapshot();
-    snap.drives = { ...replayDrives };
+    if (physics) {
+      mjcfToWorld(physics.getState().pos, physics.getState().quat, robot.root.position, robot.root.quaternion);
+      snap = physicsSnapshot(physics.getState(), dt);
+      snap.angles = { ...replayAngles }; snap.drives = { ...replayDrives };
+      for (const j of JOINT_ORDER) robot.setJoint(j, replayAngles[j]);
+    } else {
+      snap = gait.snapshot();
+      snap.drives = { ...replayDrives };
+    }
   } else {
     snap = gait.snapshot();
+  }
+  {
+    const hr = (snap.body.heading - prevHeading) / Math.max(dt, 1e-4);
+    headingRate += (hr - headingRate) * Math.min(1, dt * 4);
+    prevHeading = snap.body.heading;
   }
 
   cns.update({
@@ -265,8 +365,9 @@ function frame() {
   const epT = simTime;
   hudTime.textContent = epT.toFixed(2).padStart(5, '0') + 's';
   hudDuration.textContent = snap.eventDuration.toFixed(2) + 's';
+  const wrap180 = (deg) => ((deg % 360) + 540) % 360 - 180;
   hudBody.textContent =
-    `${Math.round(((snap.body.heading * 180 / Math.PI) % 360 + 360) % 360 * 100)}/${Math.round(snap.body.pitch * 180 / Math.PI * 100)}`;
+    `${Math.round(wrap180(snap.body.heading * 180 / Math.PI) * 10) / 10}/${Math.round(wrap180(snap.body.pitch * 180 / Math.PI) * 10) / 10}`;
   // most active descending unit = current "model unit"
   let best = 0, bestA = -1;
   for (let i = 56; i < 72; i++) {
@@ -275,6 +376,8 @@ function frame() {
   }
   hudUnit.textContent = best;
   hudState.textContent = bestA.toFixed(3);
+  hudPolicy.textContent = physics ? physics.policy : (physicsFailed ? 'procedural' : 'loading');
+  hudMode.textContent = physics ? physics.mode : '—';
   tcNow.textContent = fmtTime(epT);
   scrubPlayed.style.width = `${(epT / LOOP_S) * 100}%`;
 
