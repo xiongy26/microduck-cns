@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MALE CNS / MICRODUCK — connectome-driven robot</title>
+<link rel="stylesheet" href="css/style.css">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./assets/vendor/three.module.js",
+    "three/addons/": "./assets/vendor/addons/"
+  }
+}
+</script>
+</head>
+<body>
+<div class="page">
+  <p class="tweet">I trained a controller for Microduck using a 192-neuron Male CNS
+  connectome subset. Watch its modeled neural activity drive exploratory head and
+  body movements. Fun stuff.</p>
+
+  <div class="app" id="app">
+    <header class="app-header">
+      <h1>MALE CNS / MICRODUCK</h1>
+      <p class="sub">Real Male CNS anatomy &middot; recorded controller activity &middot; synchronized robot motion</p>
+    </header>
+
+    <div class="panels">
+      <section class="panel">
+        <h2 class="ptitle"><span class="idx">01</span> ROBOT SIMULATION</h2>
+        <div class="viewport sim-viewport" id="simView">
+          <canvas id="simCanvas"></canvas>
+          <div class="hud hud-time">
+            <div class="hud-big">TIME <span id="hudTime">00.00s</span></div>
+            <div class="hud-small cyan">Duration <span id="hudDuration">0.00s</span></div>
+          </div>
+          <div class="hud hud-sensory">
+            <div>Sensory: SHIELD&nbsp;|&nbsp;body <span id="hudBody">0/0</span></div>
+            <div class="dim">Model unit: <span id="hudUnit">-</span> &middot; State: <span id="hudState">0.000</span> &middot; write ring</div>
+          </div>
+          <div class="viewhint">drag to orbit &middot; scroll to zoom</div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="ptitle cyan"><span class="idx">02</span> MALE CNS ANATOMICAL MAPPING</h2>
+        <div class="cns-views">
+          <div class="viewport cns-view" id="cnsFullView">
+            <h3>FULL CNS CONTEXT</h3>
+            <canvas id="cnsFullCanvas"></canvas>
+            <div class="anat-label" id="labelBrain"><span class="tick"></span>Brain</div>
+            <div class="anat-label" id="labelVnc"><span class="tick"></span>Ventral nerve cord</div>
+            <div class="scalebar"><span></span>100 μm</div>
+          </div>
+          <div class="viewport cns-view" id="cnsVncView">
+            <h3>VNC DETAIL</h3>
+            <canvas id="cnsVncCanvas"></canvas>
+            <div class="scalebar"><span></span>100 μm</div>
+          </div>
+        </div>
+        <div class="cns-stats">
+          <div class="row1"><b id="statNeurons">192</b> matched neuron skeletons&nbsp;/&nbsp;<b id="statConns">2,456</b> network connections</div>
+          <div class="row2"><span class="k cyan">Cyan</span> - positive/<span class="k orange">Orange</span> - negative muscle state</div>
+          <div class="row2 dim">Gray - obfuscated skeletal data &middot; One simulated joint per neuron</div>
+        </div>
+      </section>
+    </div>
+
+    <div class="timeline">
+      <div class="tracks" id="tracks"></div>
+      <div class="scrub" id="scrub"><div class="scrub-played" id="scrubPlayed"></div></div>
+      <div class="transport">
+        <button id="btnPlay" class="playbtn" aria-label="play/pause">▶</button>
+        <span class="timecode"><span id="tcNow">0:04</span> / <span id="tcTotal">0:20</span></span>
+        <div class="tspacer"></div>
+        <button class="tbtn" id="btnMute" aria-label="volume">🔊</button>
+        <button class="tbtn" id="btnGear" aria-label="settings">⚙</button>
+        <button class="tbtn" id="btnPip" aria-label="picture in picture">⧉</button>
+        <button class="tbtn" id="btnFs" aria-label="fullscreen">⛶</button>
+      </div>
+    </div>
+
+    <footer class="chips">
+      <span class="foot-left">MICROLEGE · CONNECTOME DYNAMICS · TRAINED CONTROLLER · PHYSICS · OCEAN FLOOR</span>
+      <span class="chips-right">
+        <button class="chip" data-chip="wireframe">WIREFRAME</button>
+        <button class="chip" data-chip="connectome">CONNECTOME DYNAMICS</button>
+        <button class="chip active" data-chip="controller">TRAINED CONTROLLER</button>
+        <button class="chip" data-chip="physics">PHYSICS</button>
+        <button class="chip active" data-chip="ocean">OCEAN FLOOR</button>
+      </span>
+      <span class="foot-right">Male CNS ×6 · F1 Full · 60 fps · CC · 4K</span>
+    </footer>
+  </div>
+</div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
