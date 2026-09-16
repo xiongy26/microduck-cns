@@ -61,9 +61,9 @@ simScene.background = new THREE.Color(SKY.ocean);
 simScene.fog = new THREE.Fog(SKY.ocean, 1.6, 5.2);
 
 const simCam = new THREE.PerspectiveCamera(38, 1, 0.01, 60);
-simCam.position.set(2.0, 2.4, 3.2); // elevated 3/4 view over the maze
+simCam.position.set(0.35, 0.85, 0.75); // close 3/4 chase view, duck fills the frame
 const orbit = new OrbitControls(simCam, simCanvas);
-orbit.target.set(1.2, 0.075, 1.0);
+orbit.target.set(0, 0.075, 0); // spawn point — followRobot keeps the offset from there
 orbit.enableDamping = true;
 orbit.minDistance = 0.15;
 orbit.maxDistance = 8;
@@ -108,15 +108,15 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true;
 simScene.add(floor);
 
-simScene.add(new THREE.AmbientLight(0xbfd4e8, 0.32));
-const key = new THREE.SpotLight(0xffffff, 26, 0, 0.42, 0.85, 1.4);
+simScene.add(new THREE.AmbientLight(0xbfd4e8, 0.55));
+const key = new THREE.SpotLight(0xffffff, 26, 0, 0.55, 0.85, 1.4);
 key.position.set(0.9, 2.2, 0.7);
 key.castShadow = true;
 key.shadow.mapSize.set(1024, 1024);
 key.target.position.set(0, 0, 0);
 simScene.add(key, key.target);
-const fill = new THREE.DirectionalLight(0x88aacc, 0.5);
-fill.position.set(-1, 0.8, -0.6);
+const fill = new THREE.DirectionalLight(0x88aacc, 0.85);
+fill.position.set(-1, 1.4, -0.6);
 simScene.add(fill);
 const rim = new THREE.DirectionalLight(0x56d9d3, 0.6);
 rim.position.set(-0.4, 0.5, 1);
@@ -289,6 +289,10 @@ function applyChip(k) {
       gait.trained = physicsFailed ? on : false;
       break;
     case 'physics': gait.physics = on; break;
+    case 'cinema':
+      // hide every overlay — nothing left but the duck and the orbit camera
+      document.body.classList.toggle('cinema', on);
+      break;
     case 'ocean': {
       simScene.background.set(on ? SKY.ocean : SKY.void);
       if (simScene.fog) simScene.fog.color.set(on ? SKY.ocean : SKY.void);
@@ -303,6 +307,20 @@ function applyChip(k) {
 applyChip('controller'); // sync initial trained state
 state.chips.controller = true;
 document.querySelector('[data-chip="controller"]').classList.add('active');
+
+// overlay toggles
+document.getElementById('btnTracks')?.addEventListener('click', () => {
+  document.getElementById('tracksDock').classList.toggle('open');
+  timeline.draw();
+});
+document.getElementById('cnsTab')?.addEventListener('click', () => {
+  const panel = document.getElementById('cnsPanel');
+  const closed = panel.classList.toggle('closed');
+  document.getElementById('cnsTab').textContent = closed ? '⟨' : '⟩';
+});
+document.getElementById('cinemaExit')?.addEventListener('click', () => {
+  document.querySelector('[data-chip="cinema"]')?.click();
+});
 
 // transport
 const btnPlay = document.getElementById('btnPlay');
@@ -364,6 +382,7 @@ JOINT_ORDER.forEach((j) => { replayAngles[j] = 0; replayDrives[j] = 0; });
 const physDrives = {}; const physPrev = {};
 JOINT_ORDER.forEach((j) => { physDrives[j] = 0; physPrev[j] = 0; });
 const _eul = new THREE.Euler();
+const _lightP = new THREE.Vector3();
 
 function physicsSnapshot(st, dt) {
   // drive the visual rig from the MuJoCo state and build a snapshot with the
@@ -501,6 +520,17 @@ function frame() {
 
   followRobot();
   orbit.update();
+  // fog breathes with zoom: moody haze up close, clear view of the whole maze
+  // when the camera pulls back (fixed fog made zoomed-out views pitch black)
+  const camDist = simCam.position.distanceTo(orbit.target);
+  if (simScene.fog) {
+    simScene.fog.near = 1.6 + camDist * 0.6;
+    simScene.fog.far = 5.2 + camDist * 2.6;
+  }
+  // the key spotlight pools on the robot wherever it roams the maze
+  robot.trunk.getWorldPosition(_lightP);
+  key.position.set(_lightP.x + 0.9, _lightP.y + 2.2, _lightP.z + 0.7);
+  key.target.position.set(_lightP.x, 0, _lightP.z);
   simR?.render(simScene, simCam);
   fullR?.render(cnsScene, cnsFullCam);
   vncR?.render(cnsScene, cnsVncCam);
