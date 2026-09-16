@@ -7,7 +7,7 @@ import { buildRobot } from './robot.js';
 import { GaitController, JOINT_ORDER } from './gait.js';
 import { Connectome, NEURON_COUNT, CONNECTION_COUNT } from './connectome.js';
 import { Timeline } from './timeline.js';
-import { createDuckPhysics, mjcfToWorld, DEFAULT_POSE } from './physics.js';
+import { createDuckPhysics, mjcfToWorld, DEFAULT_POSE, OBSTACLES } from './physics.js';
 
 const LOOP_S = 20;
 
@@ -123,6 +123,64 @@ rim.position.set(-0.4, 0.5, 1);
 simScene.add(rim);
 
 simScene.add(robot.root);
+
+// ---------- obstacles ----------
+// Same array physics.js injects as MuJoCo collision boxes (MuJoCo z-up half
+// sizes) — what the whisker rays see is exactly what the body can hit.
+const rockMat = new THREE.MeshStandardMaterial({
+  color: 0x2b3849, roughness: 0.9, metalness: 0.05, side: THREE.DoubleSide,
+});
+const rockMeshes = OBSTACLES.map(({ pos, size }) => {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(size[0] * 2, size[2] * 2, size[1] * 2), rockMat);
+  m.position.set(pos[0], pos[2], -pos[1]); // mjcfToWorld convention: (x, z, -y)
+  m.castShadow = m.receiveShadow = true;
+  simScene.add(m);
+  return m;
+});
+
+// ---------- vision: head-height whisker rays → visL/visR closeness ----------
+const VISION_FAR = 1.0, VISION_NEAR = 0.25;
+const RAY_YAW = [-0.7, -0.35, 0, 0.35, 0.7]; // rad, body frame; + = left side
+const raycaster = new THREE.Raycaster();
+raycaster.far = VISION_FAR;
+const _rayO = new THREE.Vector3(), _fwd = new THREE.Vector3();
+const _left = new THREE.Vector3(), _dir = new THREE.Vector3(), _end = new THREE.Vector3();
+const VISION_UP = new THREE.Vector3(0, 1, 0);
+const rayGeo = new THREE.BufferGeometry();
+rayGeo.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(RAY_YAW.length * 6), 3));
+rayGeo.setAttribute('color', new THREE.Float32BufferAttribute(new Float32Array(RAY_YAW.length * 6), 3));
+const rayLines = new THREE.LineSegments(rayGeo, new THREE.LineBasicMaterial({
+  vertexColors: true, transparent: true, opacity: 0.45,
+  blending: THREE.AdditiveBlending, depthWrite: false,
+}));
+simScene.add(rayLines);
+
+function updateVision() {
+  robot.trunk.getWorldPosition(_rayO);
+  _rayO.y += 0.10; // head-ish height, kept below the rock tops (≥0.32 m)
+  _fwd.set(1, 0, 0).applyQuaternion(robot.root.quaternion); // MuJoCo body +x
+  _left.crossVectors(VISION_UP, _fwd).normalize();
+  let visL = 0, visR = 0;
+  const pos = rayGeo.attributes.position, col = rayGeo.attributes.color;
+  for (let k = 0; k < RAY_YAW.length; k++) {
+    const th = RAY_YAW[k];
+    _dir.copy(_fwd).multiplyScalar(Math.cos(th)).addScaledVector(_left, Math.sin(th)).normalize();
+    raycaster.set(_rayO, _dir);
+    const hits = raycaster.intersectObjects(rockMeshes, false);
+    const d = hits.length ? hits[0].distance : VISION_FAR;
+    const inten = THREE.MathUtils.clamp((VISION_FAR - d) / (VISION_FAR - VISION_NEAR), 0, 1);
+    if (th >= 0) visL = Math.max(visL, inten); else visR = Math.max(visR, inten);
+    if (hits.length) _end.copy(hits[0].point); else _end.copy(_rayO).addScaledVector(_dir, VISION_FAR);
+    pos.setXYZ(2 * k, _rayO.x, _rayO.y, _rayO.z);
+    pos.setXYZ(2 * k + 1, _end.x, _end.y, _end.z);
+    const r = hits.length ? 1.0 : 0.16, g = hits.length ? 0.55 : 0.75, b = hits.length ? 0.25 : 0.8;
+    col.setXYZ(2 * k, r, g, b);
+    col.setXYZ(2 * k + 1, r, g, b);
+  }
+  pos.needsUpdate = true;
+  col.needsUpdate = true;
+  return { visL, visR };
+}
 
 // ---------- CNS scenes ----------
 const cnsScene = new THREE.Scene();
@@ -396,6 +454,13 @@ function frame() {
     headingRate += (hr - headingRate) * Math.min(1, dt * 4);
     prevHeading = snap.body.heading;
   }
+
+  // whisker rays sample the world with the body pose that was just written,
+  // then the closeness signal rides into the brain alongside proprioception
+  const vis = updateVision();
+  window.__dbg.vision = vis;
+  sensory.visL = vis.visL;
+  sensory.visR = vis.visR;
 
   // the brain steps the full CNS dynamics and decodes commands from its
   // descending population; the RL policy executes them (balance + gait)

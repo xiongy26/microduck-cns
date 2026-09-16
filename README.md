@@ -28,16 +28,18 @@ python3 server.py        # 带 no-cache 头的静态服务器, 端口 8123
 |------|------|
 | 机器人模型 | [Pollen Robotics **MicroDuck**](https://github.com/pollen-robotics/microduck)（开源双足鸭子机器人）— 关节定义取自 [`pollen-robotics/microduck_rl`](https://github.com/pollen-robotics/microduck_rl) 的 MJCF（`robot_walk.xml`，14 关节），网格为官方 STL |
 | 神经系统原型 | Janelia FlyEM 的 **MANC**（雄性成虫神经索 connectome，~25,000 神经元 / [neuprint-cns.janelia.org](https://neuprint-cns.janelia.org)）与 FAFB 雄性大脑（FlyWire） |
-| 神经可视化数据 | **程序化生成**（见下），但数量契约与真实一致：192 神经元 / 2,456 连接，按真实解剖分区（脑 56、下行 16、VNC 运动池 96、中间 8、上行 16），运动池→关节为拓扑映射（前腿关节→ pro/meso/metathoracic 神经节，头颈关节→ 食道下神经节 SOG） |
-| 控制器 | **方案 B 分层控制**：192 神经元 CTRNN 微回路（模式/转向/扫描 + 感觉反馈）输出高级指令；低层平衡与步态由训练好的 RL 策略执行。连接为结构化功能微回路 + 弥散弱耦合（参数经 tools 外的原型扫描调定），非训练 MANC 权重 |
+| 神经可视化数据 | **程序化生成**（见下），但数量契约与真实一致：200 神经元 / 2,456 连接，按真实解剖分区（脑 56、下行 16、VNC 运动池 96、中间 8、上行 16、视叶 8），运动池→关节为拓扑映射（前腿关节→ pro/meso/metathoracic 神经节，头颈关节→ 食道下神经节 SOG） |
+| 控制器 | **方案 B 分层控制**：200 神经元 CTRNN 微回路（模式/转向/扫描 + 感觉反馈）输出高级指令；低层平衡与步态由训练好的 RL 策略执行。连接为结构化功能微回路 + 弥散弱耦合（参数经 tools 外的原型扫描调定），非训练 MANC 权重 |
 
 ## 神经活动 → 机器人运动的数据流（闭环）
 
 ```
-        ┌──────────────────────── 192 神经元 CTRNN（connectome.js）──────────────────────┐
+        ┌──────────────────────── 200 神经元 CTRNN（connectome.js）──────────────────────┐
         │  感觉上行(16) ← 身体状态: 速度/偏航率/直立度/摔倒/头颈本体感觉                  │
+        │  视叶(8)    ← 头部 5 条 raycast 遮挡距离（左右半野接近度）                     │
         │  脑(56): 模式回路 W/S 翻转触发器 + 稳态压 → 走/停节律                          │
-        │          转向回路 L/R + 稳态压 → 探索性转向；扫描振荡器 SY/SP → 头部扫描        │
+        │          转向回路 L/R + 稳态压 → 探索性转向 + 视觉避障（左障碍→右转）           │
+        │          扫描振荡器 SY/SP → 头部扫描                                           │
         │  下行(16): DW/DS/DL/DR 指令群 ──解码──► vx / wz / 头部关节偏移                 │
         └──────────────────────────────────┬────────────────────────────────────────────┘
                                            ▼
@@ -49,9 +51,14 @@ python3 server.py        # 带 no-cache 头的静态服务器, 端口 8123
         └──► 身体状态回灌大脑感觉通道（闭环）
 ```
 
-- 大脑是真正的**在环控制器**：每个渲染帧积分全部 192 个神经元的 CTRNN 动力学
+- 大脑是真正的**在环控制器**：每个渲染帧积分全部 200 个神经元的 CTRNN 动力学
   （2456 条加权连接 + OU 噪声 + 4 个慢稳态变量），指令从下行神经元群解码——
   `vx = 0.25·(DW−DS)`、`wz = 0.35·(DL−DR)`、头部偏移来自扫描振荡器群
+- **视觉避障**：头部高度 5 条 raycast（±40°/±20°/0°）测遮挡距离，编码进视叶
+  VISL/VISR 群（200 神经元中的 8 个，192-199）。单侧障碍 → 对侧转向群兴奋、
+  同侧抑制（左前有石头 → 右转绕开）；正面对称接近 → 招募 S 群停下，站立稳态压
+  习惯化后重新出发绕行。物理端同样的箱子作为碰撞体注入 MJCF（`physics.js`
+  `OBSTACLES`）， raycast 看见的 = 身体撞得上的
 - 走/停节律由 W/S 互相抑制（赢者通吃）+ 慢稳态压（行走时积累"疲劳"，站立时
   积累相反压力）产生：行走 bout ≈ 6 s、站立 bout ≈ 3–5 s，类似果蝇的探索-停顿节律
 - 摔倒时感觉通道"fallen"强激活 S 群、抑制 W 群 → 大脑立即停止行走指令，
@@ -84,7 +91,7 @@ microduck-cns/
 │   ├── physics.js                  # MuJoCo WASM + RL 策略推理（执行大脑指令）
 │   ├── robot.js                    # MJCF 运动学树重建 + STL 材质分配
 │   ├── gait.js                     # (备用) 过程式步态 + 未训练消融模式
-│   ├── connectome.js               # 192 神经元 CTRNN 大脑：微回路动力学 + 指令解码 + 解剖渲染
+│   ├── connectome.js               # 200 神经元 CTRNN 大脑：微回路动力学 + 指令解码 + 解剖渲染
 │   └── timeline.js                 # 14 关节 20s 环形缓冲时间轴
 ├── assets/
 │   ├── robot.json                  # 由 tools/mjcf_to_json.py 转换的运动学树
@@ -117,6 +124,6 @@ c = Client('https://neuprint-cns.janelia.org', dataset='manc', token='YOUR_TOKEN
 skel = fetch_skeleton(bodyId= bodies[0])   # SWC 样式骨架
 ```
 
-把 192 个骨架（SWC 折线）与突触连接矩阵写入 `assets/connectome.json`，
+把 200 个骨架（SWC 折线）与突触连接矩阵写入 `assets/connectome.json`，
 在 `Connectome.growAll()/wire()` 里优先加载该文件即可 — 其余渲染、着色、
 池映射逻辑无需改动。

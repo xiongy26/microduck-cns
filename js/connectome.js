@@ -1,9 +1,10 @@
-// connectome.js — a 192-neuron Male CNS subset rendered as anatomical skeletons
+// connectome.js — a 200-neuron Male CNS subset rendered as anatomical skeletons
 // AND simulated as the robot's brain. Layout follows real male fly anatomy:
-// brain (supraesophageal ganglion + SOG), cervical connective, and a
-// thoracic+abdominal ventral nerve cord with lateral nerve roots.
+// brain (supraesophageal ganglion + SOG) flanked by optic lobes, cervical
+// connective, and a thoracic+abdominal ventral nerve cord with lateral nerve
+// roots.
 //
-// The same 192 cells / 2,456 weighted connections that are drawn are the
+// The same 200 cells / 2,456 weighted connections that are drawn are the
 // controller: a continuous-time recurrent network (CTRNN) with functional
 // microcircuits mapped onto the populations —
 //   brain      0-55   mode circuit (walk W / stand S), steering (L/R),
@@ -13,6 +14,8 @@
 //   local      168-175 VNC interneurons
 //   ascending  176-191 proprioceptive channels (speed, turn, upright, fall,
 //                     head) feeding the brain — the sensory feedback loop
+//   visual     192-199 optic-lobe channels (left/right ray closeness) that
+//                     bias steering away from obstacles — object avoidance
 // Slow "homeostat" variables (walk/stand/turn pressure) gate the
 // winner-take-all circuits and produce exploratory bouts. Commands are read
 // out of the DESCENDING population and sent to the RL policy (low-level
@@ -23,7 +26,7 @@
 // dataset "manc"); a token is required, see README.
 import * as THREE from 'three';
 
-export const NEURON_COUNT = 192;
+export const NEURON_COUNT = 200;
 export const CONNECTION_COUNT = 2456;
 
 // populations: [start, end) index ranges
@@ -33,15 +36,18 @@ export const POPS = {
   motor: [72, 168],
   local: [168, 176],
   ascending: [176, 192],
+  visual: [192, 200],
 };
 
-// functional microcircuit groups (indices within brain/descending)
+// functional microcircuit groups (indices within brain/descending/visual)
 // W walk drive, S stand/rest, L/R steer left/right, SY/SP1/SP2 gaze scan
-// (yaw/pitch/roll), A association; DW/DS/DL/DR descending command cells
+// (yaw/pitch/roll), A association; DW/DS/DL/DR descending command cells;
+// VISL/VISR optic-lobe channels (obstacle closeness, left/right hemifield)
 const G = {
   W: [0, 8], S: [8, 16], L: [16, 24], R: [24, 32],
   SY: [32, 40], SP1: [40, 44], SP2: [44, 48], A: [48, 56],
   DW: [56, 60], DS: [60, 64], DL: [64, 68], DR: [68, 72],
+  VISL: [192, 196], VISR: [196, 200],
 };
 // ascending sensory channels
 const ASC = { fwd: [176, 180], turnL: [180, 182], turnR: [182, 184], up: [184, 186], fall: [186, 188], head: [188, 192] };
@@ -127,6 +133,8 @@ export class Connectome {
     for (let i = l0; i < l1; i++) this.neurons.push(this.growLocalNeuron());
     const [a0, a1] = POPS.ascending;
     for (let i = a0; i < a1; i++) this.neurons.push(this.growAscendingNeuron());
+    const [v0, v1] = POPS.visual;
+    for (let i = v0; i < v1; i++) this.neurons.push(this.growVisualNeuron(i < 196 ? -1 : 1));
 
     // per-neuron render metadata
     for (const n of this.neurons) {
@@ -261,6 +269,37 @@ export class Connectome {
     return { soma, segs, pop: 'ascending', pool: null };
   }
 
+  // optic lobe: lateral protrusion of the brain capsule (4 cells per side),
+  // with a thin medial tract running back into the central brain
+  growVisualNeuron(side) {
+    const r = this.rng;
+    const soma = new THREE.Vector3(
+      70 + (r() - 0.5) * 110,
+      340 + (r() - 0.5) * 70,
+      side * (118 + r() * 52),
+    );
+    const segs = [];
+    const nBranch = 4 + Math.floor(r() * 4);
+    for (let b = 0; b < nBranch; b++) {
+      let p = soma.clone();
+      let dir = new THREE.Vector3(r() - 0.5, r() - 0.5, side * (0.5 + r())).normalize();
+      const nSeg = 2 + Math.floor(r() * 3);
+      for (let s = 0; s < nSeg; s++) {
+        const q = p.clone().addScaledVector(dir, 12 + r() * 22);
+        segs.push(p.clone(), q.clone());
+        p = q;
+        dir.add(new THREE.Vector3(r() - 0.5, r() - 0.5, side * 0.4)).normalize();
+      }
+    }
+    let p = soma.clone();
+    for (let s = 0; s < 3; s++) {
+      const q = p.clone().add(new THREE.Vector3((r() - 0.5) * 30, (r() - 0.5) * 24, -side * (26 + r() * 20)));
+      segs.push(p.clone(), q.clone());
+      p = q;
+    }
+    return { soma, segs, pop: 'visual', pool: null };
+  }
+
   // ---------- wiring: exactly CONNECTION_COUNT weighted directed edges ----------
   // Functional microcircuits are realized as structured edge sets inside the
   // same population categories the dashboard counts; the remainder is diffuse
@@ -289,6 +328,8 @@ export class Connectome {
     }
 
     // --- brain→brain (520): WTA mode & steering circuits, scan oscillators ---
+    // 72 of the diffuse budget is reallocated to the visual→brain avoidance
+    // circuit below, keeping the total at CONNECTION_COUNT
     {
       const S = [
         ['W', 'W', 24, +0.20], ['S', 'S', 24, +0.20],
@@ -301,10 +342,11 @@ export class Connectome {
         ['SY', 'SP1', 4, -0.30], ['SP1', 'SY', 4, -0.30], ['SY', 'SP2', 4, -0.30], ['SP2', 'SY', 4, -0.30],
         ['A', 'A', 8, +0.20],
       ];
+      const VIS_GIVE = 72;
       let struct = 0;
       for (const [s, d, c, w] of S) { pairs(grp(s), grp(d), c, w); struct += c; }
       const brainAll = allOf('brain');
-      pairs(brainAll, brainAll, 520 - struct, () => (rng() * 2 - 1) * 0.12);
+      pairs(brainAll, brainAll, 520 - struct - VIS_GIVE, () => (rng() * 2 - 1) * 0.12);
     }
     // --- brain→descending (208): command pathway ---
     {
@@ -360,6 +402,20 @@ export class Connectome {
       for (const [s, d, c, w] of S) { pairs(ascGrp(s), grp(d), c, w); struct += c; }
       pairs(allOf('ascending'), allOf('brain'), 432 - struct, () => (rng() * 2 - 1) * 0.12);
     }
+    // --- visual (optic lobe) → brain (72): object avoidance ---
+    // an obstacle in one hemifield excites the CONTRALATERAL steering group and
+    // suppresses the ipsilateral one (object left → turn right); bilateral
+    // (head-on) activity recruits S instead, which stalls walking through the
+    // existing WTA — and the stand homeostat habituates it so the robot
+    // resumes and steers out rather than freezing in front of the rock
+    {
+      const S = [
+        ['VISL', 'L', 12, -0.45], ['VISL', 'R', 16, +0.50],
+        ['VISR', 'R', 12, -0.45], ['VISR', 'L', 16, +0.50],
+        ['VISL', 'S', 8, +0.30], ['VISR', 'S', 8, +0.30],
+      ];
+      for (const [s, d, c, w] of S) pairs(grp(s), grp(d), c, w);
+    }
 
     if (edges.length !== CONNECTION_COUNT) throw new Error(`connectome: ${edges.length} edges != ${CONNECTION_COUNT}`);
     return edges;
@@ -388,13 +444,15 @@ export class Connectome {
       if (i < 8) role = 'W'; else if (i < 16) role = 'S'; else if (i < 24) role = 'L';
       else if (i < 32) role = 'R'; else if (i < 40) role = 'SY'; else if (i < 48) role = 'SP';
       else if (i < 56) role = 'A'; else if (i < 72) role = 'D';
-      else if (i < 168) role = 'M'; else if (i < 176) role = 'LOC'; else role = 'ASC';
+      else if (i < 168) role = 'M'; else if (i < 176) role = 'LOC';
+      else if (i < 192) role = 'ASC'; else role = 'VIS';
       const p = {
         W: [1.0, +0.28, 0.08], S: [1.0, +0.22, 0.08],
         L: [0.8, -0.05, 0.35], R: [0.8, -0.05, 0.35],
         SY: [0.25, 0, 0.10], SP: [0.3, 0, 0.10],
         A: [0.6, 0, 0.05], D: [0.2, 0, 0.04],
         M: [0.06, 0, 0.03], LOC: [0.2, 0, 0.05], ASC: [0.08, 0, 0.02],
+        VIS: [0.12, 0, 0.03],
       }[role];
       this.tau[i] = p[0]; this.bias[i] = p[1]; this.nsig[i] = p[2];
     }
@@ -414,7 +472,8 @@ export class Connectome {
   }
 
   // ---------- one integration step of the whole CNS ----------
-  // sensory: {speed, yawRate, upright, fallen, headSpeed} in [0..~1.2] units
+  // sensory: {speed, yawRate, upright, fallen, headSpeed, visL, visR}
+  // (all in [0..~1.2] units; visL/visR = obstacle closeness per hemifield)
   // drives:  {jointName: [-1..1]} actual muscle states (motor-pool feedback)
   step(sensory, drives, dt) {
     const N = NEURON_COUNT;
@@ -434,6 +493,9 @@ export class Connectome {
     for (let k = ASC.up[0]; k < ASC.up[1]; k++) drive[k] += SENSORY_GAIN * clamp(sensory.upright, 0, 1.2);
     for (let k = ASC.fall[0]; k < ASC.fall[1]; k++) drive[k] += SENSORY_GAIN * clamp(sensory.fallen, 0, 1.2);
     for (let k = ASC.head[0]; k < ASC.head[1]; k++) drive[k] += SENSORY_GAIN * clamp(sensory.headSpeed / 1.5, 0, 1.2);
+    // optic-lobe channels: obstacle closeness per hemifield (0 clear, 1 touching)
+    for (let k = G.VISL[0]; k < G.VISL[1]; k++) drive[k] += SENSORY_GAIN * clamp(sensory.visL || 0, 0, 1.2);
+    for (let k = G.VISR[0]; k < G.VISR[1]; k++) drive[k] += SENSORY_GAIN * clamp(sensory.visR || 0, 0, 1.2);
     // motor pools feel the actual muscle state (their rendered "activity")
     for (let i = POPS.motor[0]; i < POPS.motor[1]; i++) {
       const pool = this.poolOfCell[i];
@@ -600,15 +662,15 @@ export class Connectome {
     this.pulses.visible = false;
     this.group.add(this.pulses);
 
-    this.bounds = { min: new THREE.Vector3(-220, -640, -160), max: new THREE.Vector3(260, 500, 160) };
+    this.bounds = { min: new THREE.Vector3(-220, -640, -220), max: new THREE.Vector3(260, 500, 220) };
   }
 
   // ---------- per-frame update: dynamics + paint ----------
   // drives: {jointName: [-1..1]} signed muscle states (readout);
-  // sensory: {speed, yawRate, upright, fallen, headSpeed}
+  // sensory: {speed, yawRate, upright, fallen, headSpeed, visL, visR}
   // returns decoded commands {vx, wz, head, mode, walkDrive}
   update({ drives, sensory }, dt) {
-    this.step(sensory ?? { speed: 0, yawRate: 0, upright: 1, fallen: 0, headSpeed: 0 }, drives ?? {}, Math.min(dt, 0.05));
+    this.step(sensory ?? { speed: 0, yawRate: 0, upright: 1, fallen: 0, headSpeed: 0, visL: 0, visR: 0 }, drives ?? {}, Math.min(dt, 0.05));
 
     // paint skeletons from the simulated activity
     const col = this.skeletons.geometry.attributes.color;

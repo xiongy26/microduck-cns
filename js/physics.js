@@ -29,6 +29,18 @@ const POLICY_FILES = {
   walk: 'assets/policies/BEST_alpha_walking.onnx',
 };
 
+// Static box obstacles scattered around the spawn point, in MuJoCo z-up world
+// coords (half-sizes). physics.js injects them as collision geoms; main.js
+// builds the matching visual meshes from the same array, so rays that see a
+// rock are rays that hit a rock.
+export const OBSTACLES = [
+  { pos: [1.15, 0.50, 0.15], size: [0.17, 0.21, 0.15] },   // ahead-left
+  { pos: [1.65, -0.60, 0.17], size: [0.23, 0.16, 0.17] },  // ahead-right
+  { pos: [2.15, 0.05, 0.16], size: [0.15, 0.15, 0.16] },   // straight ahead, far
+  { pos: [0.35, -1.05, 0.16], size: [0.19, 0.23, 0.16] },  // right of spawn
+  { pos: [-0.85, 0.75, 0.16], size: [0.21, 0.17, 0.16] },  // behind-left
+];
+
 export async function createDuckPhysics({ onProgress = () => {} } = {}) {
   const step = (msg) => onProgress(msg);
 
@@ -63,6 +75,14 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
   if (!doc.querySelector('geom[name="floor"]')) {
     world.appendChild(el('geom', { name: 'floor', type: 'plane', size: '0 0 0.05', pos: '0 0 0' }));
   }
+  // static collision boxes for the rocks the brain must see around
+  OBSTACLES.forEach(({ pos, size }, i) => {
+    world.appendChild(el('geom', {
+      name: `rock${i}`, type: 'box',
+      size: size.join(' '), pos: pos.join(' '),
+      rgba: '0.16 0.2 0.26 1',
+    }));
+  });
   const poseByName = new Map(JOINT_NAMES.map((n, i) => [n, DEFAULT_POSE[i]]));
   const qposJoints = [...doc.querySelectorAll('body > joint')]
     .filter((j) => j.getAttribute('type') !== 'free')
