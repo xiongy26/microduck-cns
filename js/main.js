@@ -7,7 +7,7 @@ import { buildRobot } from './robot.js';
 import { GaitController, JOINT_ORDER } from './gait.js';
 import { Connectome, NEURON_COUNT, CONNECTION_COUNT } from './connectome.js';
 import { Timeline } from './timeline.js';
-import { createDuckPhysics, mjcfToWorld, DEFAULT_POSE, OBSTACLES } from './physics.js';
+import { createDuckPhysics, mjcfToWorld, DEFAULT_POSE, OBSTACLES, MAZE_WALLS } from './physics.js';
 
 const LOOP_S = 20;
 
@@ -61,12 +61,12 @@ simScene.background = new THREE.Color(SKY.ocean);
 simScene.fog = new THREE.Fog(SKY.ocean, 1.6, 5.2);
 
 const simCam = new THREE.PerspectiveCamera(38, 1, 0.01, 60);
-simCam.position.set(0.32, 0.19, 0.44);
+simCam.position.set(2.0, 2.4, 3.2); // elevated 3/4 view over the maze
 const orbit = new OrbitControls(simCam, simCanvas);
-orbit.target.set(0, 0.09, 0);
+orbit.target.set(1.2, 0.075, 1.0);
 orbit.enableDamping = true;
 orbit.minDistance = 0.15;
-orbit.maxDistance = 3;
+orbit.maxDistance = 8;
 orbit.update();
 
 // camera rig follows the walking robot while preserving user orbit offsets
@@ -125,22 +125,29 @@ simScene.add(rim);
 simScene.add(robot.root);
 
 // ---------- obstacles ----------
-// Same array physics.js injects as MuJoCo collision boxes (MuJoCo z-up half
-// sizes) — what the whisker rays see is exactly what the body can hit.
+// Maze walls + the rocks beyond the exit. Both arrays are the exact geoms
+// physics.js injects into MuJoCo (MuJoCo z-up half sizes) — what the whisker
+// rays see is exactly what the body can hit.
 const rockMat = new THREE.MeshStandardMaterial({
   color: 0x2b3849, roughness: 0.9, metalness: 0.05, side: THREE.DoubleSide,
 });
-const rockMeshes = OBSTACLES.map(({ pos, size }) => {
-  const m = new THREE.Mesh(new THREE.BoxGeometry(size[0] * 2, size[2] * 2, size[1] * 2), rockMat);
-  m.position.set(pos[0], pos[2], -pos[1]); // mjcfToWorld convention: (x, z, -y)
-  m.castShadow = m.receiveShadow = true;
-  simScene.add(m);
-  return m;
+const wallMat = new THREE.MeshStandardMaterial({
+  color: 0x41536b, roughness: 0.85, metalness: 0.05, side: THREE.DoubleSide,
 });
+const rockMeshes = [];
+for (const [arr, mat] of [[MAZE_WALLS, wallMat], [OBSTACLES, rockMat]]) {
+  for (const { pos, size } of arr) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(size[0] * 2, size[2] * 2, size[1] * 2), mat);
+    m.position.set(pos[0], pos[2], -pos[1]); // mjcfToWorld convention: (x, z, -y)
+    m.castShadow = m.receiveShadow = true;
+    simScene.add(m);
+    rockMeshes.push(m);
+  }
+}
 
 // ---------- vision: head-height whisker rays → visL/visR closeness ----------
-const VISION_FAR = 1.0, VISION_NEAR = 0.25;
-const RAY_YAW = [-0.7, -0.35, 0, 0.35, 0.7]; // rad, body frame; + = left side
+const VISION_FAR = 1.3, VISION_NEAR = 0.25;
+const RAY_YAW = [-0.95, -0.5, 0, 0.5, 0.95]; // rad, body frame; + = left side
 const raycaster = new THREE.Raycaster();
 raycaster.far = VISION_FAR;
 const _rayO = new THREE.Vector3(), _fwd = new THREE.Vector3();

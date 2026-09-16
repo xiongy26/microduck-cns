@@ -29,16 +29,37 @@ const POLICY_FILES = {
   walk: 'assets/policies/BEST_alpha_walking.onnx',
 };
 
-// Static box obstacles scattered around the spawn point, in MuJoCo z-up world
+// Static box obstacles scattered beyond the maze exit, in MuJoCo z-up world
 // coords (half-sizes). physics.js injects them as collision geoms; main.js
 // builds the matching visual meshes from the same array, so rays that see a
 // rock are rays that hit a rock.
 export const OBSTACLES = [
-  { pos: [1.15, 0.50, 0.15], size: [0.17, 0.21, 0.15] },   // ahead-left
-  { pos: [1.65, -0.60, 0.17], size: [0.23, 0.16, 0.17] },  // ahead-right
-  { pos: [2.15, 0.05, 0.16], size: [0.15, 0.15, 0.16] },   // straight ahead, far
-  { pos: [0.35, -1.05, 0.16], size: [0.19, 0.23, 0.16] },  // right of spawn
-  { pos: [-0.85, 0.75, 0.16], size: [0.21, 0.17, 0.16] },  // behind-left
+  { pos: [1.8, 5.6, 0.15], size: [0.17, 0.21, 0.15] },
+  { pos: [2.8, 6.8, 0.17], size: [0.23, 0.16, 0.17] },
+  { pos: [1.0, 7.4, 0.16], size: [0.15, 0.15, 0.16] },
+  { pos: [2.4, 8.2, 0.16], size: [0.19, 0.23, 0.16] },
+  { pos: [3.4, 6.2, 0.16], size: [0.21, 0.17, 0.16] },
+];
+
+// The maze: an L-shaped corridor with one dead-end pocket on the south wall.
+// Spawn is the STAND keyframe (0,0) facing +x, deep in the long arm; the only
+// exit opens north at the top of the short arm (y ≈ 4.4). Corridors are
+// 2.4 m wide so centered walls sit just beyond the 1.3 m whisker range —
+// the brain is blind while centered, senses a wall only when drifting toward
+// it, and its avoid-steer re-centers the body. Wall tops are 0.45 m, well
+// above the ray height (~0.25 m). 2-D closed-loop tuning lives in
+// tools/maze_sim.mjs (escape ≈ 70% within 3 min over random seeds).
+export const MAZE_WALLS = [
+  { pos: [-0.05, 1.3, 0.225], size: [0.75, 0.1, 0.225] },  // A2 long-arm north
+  { pos: [0.7, 2.3, 0.225],   size: [0.1, 1.1, 0.225] },   // B1 short-arm west
+  { pos: [3.3, 2.8, 0.225],   size: [0.1, 1.6, 0.225] },   // B2 short-arm east
+  { pos: [3.3, -0.1, 0.225],  size: [0.1, 1.3, 0.225] },   // A3 long-arm east cap
+  { pos: [0.2, -1.3, 0.225],  size: [0.8, 0.1, 0.225] },   // A1a long-arm south w/ pocket mouth
+  { pos: [2.7, -1.3, 0.225],  size: [0.5, 0.1, 0.225] },   // A1b south-east
+  { pos: [0.9, -1.9, 0.225],  size: [0.1, 0.7, 0.225] },   // N1 pocket west
+  { pos: [2.3, -1.9, 0.225],  size: [0.1, 0.7, 0.225] },   // N2 pocket east
+  { pos: [1.6, -2.7, 0.225],  size: [0.8, 0.1, 0.225] },   // N3 pocket end
+  { pos: [-0.7, 0.0, 0.225],  size: [0.1, 1.4, 0.225] },   // A4 west cap (behind spawn)
 ];
 
 export async function createDuckPhysics({ onProgress = () => {} } = {}) {
@@ -75,14 +96,16 @@ export async function createDuckPhysics({ onProgress = () => {} } = {}) {
   if (!doc.querySelector('geom[name="floor"]')) {
     world.appendChild(el('geom', { name: 'floor', type: 'plane', size: '0 0 0.05', pos: '0 0 0' }));
   }
-  // static collision boxes for the rocks the brain must see around
-  OBSTACLES.forEach(({ pos, size }, i) => {
-    world.appendChild(el('geom', {
-      name: `rock${i}`, type: 'box',
-      size: size.join(' '), pos: pos.join(' '),
-      rgba: '0.16 0.2 0.26 1',
-    }));
-  });
+  // static collision boxes for the maze walls and the rocks beyond the exit
+  for (const [name, arr] of [['wall', MAZE_WALLS], ['rock', OBSTACLES]]) {
+    arr.forEach(({ pos, size }, i) => {
+      world.appendChild(el('geom', {
+        name: `${name}${i}`, type: 'box',
+        size: size.join(' '), pos: pos.join(' '),
+        rgba: name === 'wall' ? '0.2 0.25 0.33 1' : '0.16 0.2 0.26 1',
+      }));
+    });
+  }
   const poseByName = new Map(JOINT_NAMES.map((n, i) => [n, DEFAULT_POSE[i]]));
   const qposJoints = [...doc.querySelectorAll('body > joint')]
     .filter((j) => j.getAttribute('type') !== 'free')

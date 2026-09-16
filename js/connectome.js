@@ -342,7 +342,7 @@ export class Connectome {
         ['SY', 'SP1', 4, -0.30], ['SP1', 'SY', 4, -0.30], ['SY', 'SP2', 4, -0.30], ['SP2', 'SY', 4, -0.30],
         ['A', 'A', 8, +0.20],
       ];
-      const VIS_GIVE = 72;
+      const VIS_GIVE = 88;
       let struct = 0;
       for (const [s, d, c, w] of S) { pairs(grp(s), grp(d), c, w); struct += c; }
       const brainAll = allOf('brain');
@@ -402,17 +402,22 @@ export class Connectome {
       for (const [s, d, c, w] of S) { pairs(ascGrp(s), grp(d), c, w); struct += c; }
       pairs(allOf('ascending'), allOf('brain'), 432 - struct, () => (rng() * 2 - 1) * 0.12);
     }
-    // --- visual (optic lobe) → brain (72): object avoidance ---
+    // --- visual (optic lobe) → brain (88): object avoidance + orienting ---
     // an obstacle in one hemifield excites the CONTRALATERAL steering group and
     // suppresses the ipsilateral one (object left → turn right); bilateral
     // (head-on) activity recruits S instead, which stalls walking through the
     // existing WTA — and the stand homeostat habituates it so the robot
-    // resumes and steers out rather than freezing in front of the rock
+    // resumes and steers out rather than freezing in front of the rock.
+    // VISL/VISR → A feeds the touch-induced orienting gate in step(): while
+    // visual contact persists, in-place turning is unlocked so dead ends
+    // resolve into U-turns (the open side has no visual brake, the walled
+    // side does — the turn settles facing the gap).
     {
       const S = [
         ['VISL', 'L', 12, -0.45], ['VISL', 'R', 16, +0.50],
         ['VISR', 'R', 12, -0.45], ['VISR', 'L', 16, +0.50],
         ['VISL', 'S', 8, +0.30], ['VISR', 'S', 8, +0.30],
+        ['VISL', 'A', 8, +0.50], ['VISR', 'A', 8, +0.50],
       ];
       for (const [s, d, c, w] of S) pairs(grp(s), grp(d), c, w);
     }
@@ -532,8 +537,16 @@ export class Connectome {
     const dw = meanOf('DW'), ds = meanOf('DS');
     const dl = meanOf('DL'), dr = meanOf('DR');
     const walkDrive = clamp(dw - ds, 0, 1);
-    const vx = 0.25 * clamp((walkDrive - 0.1) / 0.5, 0, 1);
-    const wz = 0.35 * clamp(dl - dr, -1, 1) * clamp(walkDrive * 1.5, 0, 1);
+    // steering gate: walking unlocks turning as usual; visual contact via the
+    // association population ALSO unlocks it (touch-induced orienting), so a
+    // stalled robot can pivot in place at a dead end until it faces open space
+    const aAct = meanOf('A');
+    const wzGate = clamp(Math.max(walkDrive * 1.5, aAct * 1.3 - 0.1), 0, 1);
+    const wz = 0.35 * clamp(dl - dr, -1, 1) * wzGate;
+    // orienting creep: a whisper of forward drive while the gate is open turns
+    // dead-end pivots into shallow arcs that slide along walls and out of
+    // concave corners instead of grinding into them
+    const vx = 0.25 * clamp((walkDrive - 0.1) / 0.5, 0, 1) + 0.05 * wzGate;
     const scanAmp = 0.3 + 0.7 * clamp(1 - walkDrive, 0, 1);
     const head = this.cmds.head;
     head.head_yaw = 0.45 * meanOf('SY') * scanAmp;

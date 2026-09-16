@@ -13,11 +13,6 @@
 html, body { background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
 .page { max-width: 1180px; margin: 0 auto; padding: 26px 16px 60px; }
 
-.tweet {
-  font-size: 26px; line-height: 1.35; font-weight: 700;
-  letter-spacing: -0.01em; margin: 4px 2px 26px; max-width: 1050px;
-}
-
 .app {
   background: var(--card); border: 1px solid var(--card-edge);
   border-radius: 20px; padding: 18px 18px 12px; overflow: hidden;
