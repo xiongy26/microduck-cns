@@ -134,26 +134,63 @@ const cnsVncCanvas = document.getElementById('cnsVncCanvas');
 const cnsFullCam = new THREE.PerspectiveCamera(30, 1, 10, 8000);
 cnsFullCam.position.set(0, -60, 2720);
 cnsFullCam.lookAt(20, -70, 0);
-const cnsVncCam = new THREE.PerspectiveCamera(30, 1, 10, 8000);
-cnsVncCam.position.set(-880, -330, 1950);
-cnsVncCam.lookAt(-20, -240, 0);
+// VNC detail — truly zoomed in on the ventral-nerve-cord motor pools
+// (FOV 15° + distance ~700 yields a vertical extent of ~184 world units, so
+//  the view frames the meso+meta thoracic pools (~y∈[-215,-100]) tightly
+//  and excludes the brain / descending populations above)
+const cnsVncCam = new THREE.PerspectiveCamera(15, 1, 10, 8000);
+cnsVncCam.position.set(-220, -210, 700);
+cnsVncCam.lookAt(0, -210, 0);
 
 // ---------- renderers ----------
+// try/catch around WebGLRenderer — headless / GPU-blocked / sandboxed browsers
+// throw here. We return null and the frame loop still ticks (CNS integration,
+// timeline, HUD all keep working); only the 3D viewport is dark.
+let lastWebGLError = null;
 function makeRenderer(canvas) {
-  const r = new THREE.WebGLRenderer({ canvas, antialias: true });
-  r.setPixelRatio(Math.min(devicePixelRatio, 2));
-  r.shadowMap.enabled = canvas === simCanvas;
-  r.shadowMap.type = THREE.PCFSoftShadowMap;
-  return r;
+  try {
+    const r = new THREE.WebGLRenderer({ canvas, antialias: true });
+    r.setPixelRatio(Math.min(devicePixelRatio, 2));
+    r.shadowMap.enabled = canvas === simCanvas;
+    r.shadowMap.type = THREE.PCFSoftShadowMap;
+    return r;
+  } catch (err) {
+    console.error('[render] WebGL unavailable for', canvas?.id, err);
+    lastWebGLError = err;
+    return null;
+  }
 }
 const simR = makeRenderer(simCanvas);
 const fullR = makeRenderer(cnsFullCanvas);
 const vncR = makeRenderer(cnsVncCanvas);
 
+// Friendly overlay on any canvas whose WebGL context failed to create — the
+// CNS brain keeps integrating underneath, the HUD / timeline still update, so
+// tell the user exactly that and how to recover.
+function webglFallback(canvas, label) {
+  const el = document.createElement('div');
+  el.className = 'webgl-fallback';
+  const detail = (lastWebGLError?.message || '').replace(/[<>&]/g, ' ').slice(0, 160);
+  el.innerHTML = `
+    <div class="wf-title">WEBGL UNAVAILABLE</div>
+    <div class="wf-msg">3D 视图 (${label}) 无法渲染。<br>
+      <b>脑动力学仍在后台运行</b> — 查看底部 HUD 与时间轴可观察活动。</div>
+    <div class="wf-hint">TRY A HARDWARE-ACCELERATED BROWSER</div>
+    ${detail ? `<div class="wf-detail">${detail}</div>` : ''}
+  `;
+  canvas.parentElement.appendChild(el);
+}
+if (!simR) webglFallback(simCanvas, 'robot simulation');
+if (!fullR) webglFallback(cnsFullCanvas, 'full CNS context');
+if (!vncR) webglFallback(cnsVncCanvas, 'VNC detail');
+if (!simR || !fullR || !vncR) {
+  console.warn('[render] one or more WebGL contexts failed — CNS integration still runs in the main loop');
+}
+
 function fitRenderer(r, canvas, cam) {
   const box = canvas.parentElement.getBoundingClientRect();
   const w = Math.max(2, box.width), h = Math.max(2, box.height);
-  r.setSize(w, h, false);
+  if (r) r.setSize(w, h, false);
   cam.aspect = w / h;
   cam.updateProjectionMatrix();
 }
@@ -315,6 +352,7 @@ function holdStandSnapshot(dt) {
 
 function frame() {
   requestAnimationFrame(frame);
+  try {
   const dt = Math.min(clock.getDelta(), 0.05);
 
   let snap = null;
@@ -391,8 +429,13 @@ function frame() {
 
   followRobot();
   orbit.update();
-  simR.render(simScene, simCam);
-  fullR.render(cnsScene, cnsFullCam);
-  vncR.render(cnsScene, cnsVncCam);
+  simR?.render(simScene, simCam);
+  fullR?.render(cnsScene, cnsFullCam);
+  vncR?.render(cnsScene, cnsVncCam);
+  } catch (err) {
+    // never let a single bad frame kill the loop — log and keep ticking so
+    // CNS integration, timeline and HUD all stay alive
+    console.error('[frame] loop error (will keep ticking):', err);
+  }
 }
 frame();

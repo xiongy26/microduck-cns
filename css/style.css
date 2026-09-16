@@ -35,6 +35,34 @@ html, body { background: var(--bg); color: var(--ink); font-family: system-ui, -
 .viewport { position: relative; border-radius: 12px; overflow: hidden; background: #0d1420; }
 .viewport canvas { display: block; width: 100%; height: 100%; }
 
+/* WebGL unavailable — overlay shown when THREE.WebGLRenderer fails to
+   create a context (headless / sandboxed / GPU-blocked browsers). The CNS
+   integration, timeline and HUD all keep running underneath. */
+.webgl-fallback {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: rgba(7, 11, 18, 0.92);
+  font-family: var(--mono); text-align: center; padding: 24px;
+  pointer-events: none;
+}
+.webgl-fallback .wf-title {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.2em;
+  color: var(--orange); margin-bottom: 12px;
+}
+.webgl-fallback .wf-msg {
+  font-size: 10px; color: var(--ink); max-width: 280px; line-height: 1.55;
+  letter-spacing: 0.04em;
+}
+.webgl-fallback .wf-msg b { color: var(--cyan); font-weight: 700; }
+.webgl-fallback .wf-hint {
+  margin-top: 14px; font-size: 8.5px; color: #5b6c7d;
+  letter-spacing: 0.14em; text-transform: uppercase;
+}
+.webgl-fallback .wf-detail {
+  margin-top: 10px; font-size: 8px; color: #44546a;
+  max-width: 320px; line-height: 1.4; word-break: break-word;
+}
+
 .sim-viewport { height: 430px; box-shadow: inset 0 0 0 1px #16202c; }
 .viewhint { position: absolute; right: 10px; bottom: 8px; font-family: var(--mono); font-size: 8.5px; color: #44546a; letter-spacing: 0.08em; }
 

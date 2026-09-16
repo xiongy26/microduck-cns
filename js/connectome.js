@@ -61,18 +61,23 @@ const POOL_LAYOUT = [
 
 // ---- circuit parameters (tuned in tools/ctrnn prototype; see README) ----
 // homeostats [accumulate rate, decay rate, gain, init] — slow bout pressure
+// decay rates bumped up so the W/S walk-vs-stand bouts become visible within a
+// few seconds instead of half a minute; init values halved so the very first
+// frames already show meaningful activity in the brain populations.
 const HOMEOSTAT = {
-  hw: [0.18, 0.10, 2.4, 1.2],  // walk pressure: inhibits W while walking
-  hs: [0.18, 0.18, 2.4, 0.55], // stand pressure: inhibits S while standing
-  hl: [0.40, 0.30, 1.8, 0.0],  // turn-left pressure
-  hr: [0.40, 0.30, 1.8, 0.0],  // turn-right pressure
+  hw: [0.18, 0.18, 2.4, 0.6],  // walk pressure: inhibits W while walking
+  hs: [0.18, 0.30, 2.4, 0.30], // stand pressure: inhibits S while standing
+  hl: [0.40, 0.40, 1.8, 0.0],  // turn-left pressure
+  hr: [0.40, 0.40, 1.8, 0.0],  // turn-right pressure
 };
 const SENSORY_GAIN = 3.0;
 
 const CYAN = new THREE.Color('#3fd8d0');
 const ORANGE = new THREE.Color('#ff8a3c');
-const CYAN_DIM = new THREE.Color('#1b6b68');
-const ORANGE_DIM = new THREE.Color('#8a4a20');
+// brighter dim colors so even quiet / resting neurons are clearly readable on
+// the dark background — the old dim teal/brown was nearly invisible
+const CYAN_DIM = new THREE.Color('#5ec8be');
+const ORANGE_DIM = new THREE.Color('#d68a5a');
 
 function mulberry32(seed) {
   return function () {
@@ -610,7 +615,9 @@ export class Connectome {
     for (let i = 0; i < this.neurons.length; i++) {
       const a = this.activity[i];
       const mag = Math.min(1, Math.abs(a));
-      const bright = 0.22 + 0.78 * mag;
+      // floor lifted from 0.22 → 0.45 so quiet neurons are still clearly
+      // readable; the 0.55 slope keeps the active-vs-quiet contrast intact
+      const bright = 0.45 + 0.55 * mag;
       const c = a >= 0 ? CYAN : ORANGE;
       const dim = a >= 0 ? CYAN_DIM : ORANGE_DIM;
       n_color.copy(dim).lerp(c, bright);
@@ -622,7 +629,7 @@ export class Connectome {
     const scol = this.somas.geometry.attributes.color;
     for (let i = 0; i < this.neurons.length; i++) {
       const a = this.activity[i];
-      const bright = 0.35 + 0.65 * Math.min(1, Math.abs(a));
+      const bright = 0.50 + 0.50 * Math.min(1, Math.abs(a));
       n_color.copy(a >= 0 ? CYAN : ORANGE).multiplyScalar(bright);
       scol.setXYZ(i, n_color.r, n_color.g, n_color.b);
     }
